@@ -1,9 +1,3 @@
-//
-//  LAN Scan
-//
-//  Created by Marcin Kielesiński on 4 July 2018
-//
-
 #import "LanScan.h"
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -153,61 +147,81 @@
     self.timer = nil;
 }
 
-- (void)probeNetwork{
-    NSString *deviceIPAddress = [[[[NSString stringWithFormat:@"%@%ld", self.baseAddress, (long)self.currentHostAddress] stringByReplacingOccurrencesOfString:@".0" withString:@"."] stringByReplacingOccurrencesOfString:@".00" withString:@"."] stringByReplacingOccurrencesOfString:@".." withString:@".0."];
-    
-    if(deviceIPAddress != nil) {
-        //ping to check if device is active
-        PingOperation *pingOperation = [[PingOperation alloc]initWithIPToPing:deviceIPAddress andCompletionHandler:^(NSError  * _Nullable error, NSString  * _Nonnull ip) {
-            
-            if(error == nil) {
-                
+- (void)probeNetwork {
+    NSString *deviceIPAddress = [[NSString stringWithFormat:@"%@%ld", self.baseAddress, (long)self.currentHostAddress] stringByReplacingOccurrencesOfString:@".0" withString:@"."];
+
+    if (deviceIPAddress != nil) {
+        // Ping для проверки активности устройства
+        PingOperation *pingOperation = [[PingOperation alloc] initWithIPToPing:deviceIPAddress andCompletionHandler:^(NSError * _Nullable error, NSString * _Nonnull ip) {
+            if (error == nil) {
                 NSMutableString *deviceHostName = [[self hostnamesForAddress: deviceIPAddress] mutableCopy];
-                if([deviceIPAddress isEqualToString:[self getRouterIP]]){
-                    [deviceHostName appendString: @" (router)"];
+                if ([deviceIPAddress isEqualToString:[self getRouterIP]]) {
+                    [deviceHostName appendString:@" (роутер)"];
                 }
                 
                 NSString *deviceMac = [self ip2mac: deviceIPAddress];
-                NSString *deviceBrand = [self.brandDictionary objectForKey: [self makeKeyFromMAC: deviceMac]];
+                __block NSString *deviceBrand = [self.brandDictionary objectForKey:[self makeKeyFromMAC: deviceMac]];
                 
-                if([self isEmpty:deviceBrand]) {
+                if ([self isEmpty:deviceBrand]) {
+                    // Создание URL для запроса
+                    NSString *urlString = [NSString stringWithFormat:@"https://api.macvendors.com/%@", deviceMac];
+                    NSURL *url = [NSURL URLWithString:urlString];
                     
-                    NSURL *url = [NSURL URLWithString:[[NSString alloc] initWithFormat:@"https://api.macvendors.com/%@", deviceMac]];
-                    /// Synchronous URL loading of  `DispatchQueue.main.async`
-                    NSData *data = [NSData dataWithContentsOfURL: url];
-                    if(![self isEmpty: data]) {
-                        deviceBrand = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                        if(![self isEmpty:deviceBrand]){
-                            
-                            NSMutableDictionary *vendors = [self downloadedVendorsDictionary];
-                            NSString *path = [self getDownloadedVendorsDictionaryPath];
-                            if(![self isEmpty: path]){
-                                vendors[[self makeKeyFromMAC:deviceMac]] = deviceBrand;
-                                [vendors writeToFile:path atomically:YES];
+                    // Создание задачи URLSession для выполнения запроса
+                    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+                        if (error == nil && data != nil) {
+                            NSString *vendor = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                            if (![self isEmpty:vendor]) {
+                                deviceBrand = vendor;
+                                
+                                // Сохранение полученной информации о производителе
+                                NSMutableDictionary *vendors = [self downloadedVendorsDictionary];
+                                NSString *path = [self getDownloadedVendorsDictionaryPath];
+                                if (![self isEmpty:path]) {
+                                    vendors[[self makeKeyFromMAC:deviceMac]] = deviceBrand;
+                                    [vendors writeToFile:path atomically:YES];
+                                }
                             }
                         }
-                    }
+                        
+                        // Создание словаря с найденной информацией о устройстве и передача его делегату
+                        NSDictionary *dict = @{
+                            DEVICE_NAME: deviceHostName ?: @"",
+                            DEVICE_IP_ADDRESS: deviceIPAddress ?: @"",
+                            DEVICE_MAC: deviceMac ?: @"",
+                            DEVICE_BRAND: deviceBrand ?: @""
+                        };
+                        
+                        [self.delegate lanScanDidFindNewDevice:dict];
+                    }];
+                    
+                    // Запуск задачи URLSession
+                    [task resume];
+                } else {
+                    // Если бренд уже был известен
+                    NSDictionary *dict = @{
+                        DEVICE_NAME: deviceHostName ?: @"",
+                        DEVICE_IP_ADDRESS: deviceIPAddress ?: @"",
+                        DEVICE_MAC: deviceMac ?: @"",
+                        DEVICE_BRAND: deviceBrand ?: @""
+                    };
+                    
+                    [self.delegate lanScanDidFindNewDevice:dict];
                 }
-                
-                NSDictionary *dict = [[NSDictionary alloc] initWithObjectsAndKeys:
-                                      deviceHostName != nil ? deviceHostName : @"", DEVICE_NAME,
-                                      deviceIPAddress != nil ? deviceIPAddress : @"", DEVICE_IP_ADDRESS,
-                                      deviceMac != nil ? deviceMac : @"", DEVICE_MAC,
-                                      deviceBrand != nil ? deviceBrand : @"", DEVICE_BRAND,
-                                      nil];
-                
-                [self.delegate lanScanDidFindNewDevice: dict];
             } else {
-                // If debug mode is active
-                deb(@"%@", error);
+                // Если активен режим отладки
+                NSLog(@"%@", error);
             }
-            
         }];
+        
+        // Запуск операции Ping
         [pingOperation start];
     }
-
+    
+    // Обновление делегата о ходе сканирования
     [self.delegate lanScanHasUpdatedProgress:self.currentHostAddress address: deviceIPAddress];
     
+    // Проверка завершения сканирования и его остановка при достижении максимального IP-диапазона
     if (self.currentHostAddress >= MAX_IP_RANGE) {
         [self.timer invalidate];
         [self.delegate lanScanDidFinishScanning];
@@ -425,11 +439,10 @@
                 if([name isEqualToString: DEFAULT_WIFI_INTERFACE]) {
                     // Interface is the wifi connection on the iPhone
                     wifiAddress = addr;
-                } else
-                    if([name isEqualToString: DEFAULT_CELLULAR_INTERFACE]) {
-                        // Interface is the cell connection on the iPhone
-                        cellAddress = addr;
-                    }
+                } else if([name isEqualToString: DEFAULT_CELLULAR_INTERFACE]) {
+                    // Interface is the cell connection on the iPhone
+                    cellAddress = addr;
+                }
             }
             temp_addr = temp_addr->ifa_next;
         }
@@ -440,7 +453,7 @@
     return addr ? addr : @"0.0.0.0";
 }
 
-- (NSString *) localIPAddress {
+- (NSString *)localIPAddress {
     NSString *address = @"error";
     struct ifaddrs *interfaces = NULL;
     struct ifaddrs *temp_addr = NULL;
@@ -470,14 +483,13 @@
     return address;
 }
 
-- (BOOL) isIpAddressValid:(NSString *)ipAddress{
+- (BOOL)isIpAddressValid:(NSString *)ipAddress {
     struct in_addr pin;
     int success = inet_aton([ipAddress UTF8String],&pin);
-    if (success == 1) return TRUE;
-    return FALSE;
+    return (success == 1);
 }
 
--(int) getDefaultGateway: (in_addr_t *) addr  {
+-(int)getDefaultGateway: (in_addr_t *) addr {
     int mib[] = {CTL_NET, PF_ROUTE, 0, AF_INET,
         NET_RT_FLAGS, RTF_GATEWAY};
     size_t l;
@@ -507,7 +519,7 @@
                 }
             }
             
-            if( ((rt->rtm_addrs & (RTA_DST|RTA_GATEWAY)) == (RTA_DST|RTA_GATEWAY))
+            if(((rt->rtm_addrs & (RTA_DST|RTA_GATEWAY)) == (RTA_DST|RTA_GATEWAY))
                && sa_tab[RTAX_DST]->sa_family == AF_INET
                && sa_tab[RTAX_GATEWAY]->sa_family == AF_INET) {
                 
@@ -516,7 +528,6 @@
                     if_indextoname(rt->rtm_index,ifName);
                     
                     if(strcmp([DEFAULT_WIFI_INTERFACE UTF8String], ifName) == 0){
-                        
                         *addr = ((struct sockaddr_in *)(sa_tab[RTAX_GATEWAY]))->sin_addr.s_addr;
                         r = 0;
                     }
@@ -528,13 +539,12 @@
     return r;
 }
 
--(NSString*) getRouterIP {
+-(NSString*)getRouterIP {
     struct in_addr gatewayaddr;
     int r = [self getDefaultGateway:(&(gatewayaddr.s_addr))];
     if (r >= 0) {
         return [NSString stringWithUTF8String:inet_ntoa(gatewayaddr)];
     }
-    
     return @"";
 }
 
