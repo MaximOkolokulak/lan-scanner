@@ -17,6 +17,8 @@
 #import <SystemConfiguration/CaptiveNetwork.h>
 
 #define VENDORS_DICTIONARY @"vendors.out"
+#define TIMEOUT 5.0
+#define MAX_IP_RANGE 254
 
 #ifndef DEFAULT_WIFI_INTERFACE
 #define DEFAULT_WIFI_INTERFACE @"en0"
@@ -65,7 +67,7 @@
     return self;
 }
 
--(BOOL) isEmpty: (NSObject*) o {
+-(BOOL)isEmpty: (NSObject*)o {
     if(o == nil) {
         return true;
     }
@@ -84,7 +86,7 @@
     return true;
 }
 
--(NSString*) getDownloadedVendorsDictionaryPath {
+-(NSString*)getDownloadedVendorsDictionaryPath {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (![self isEmpty:paths]) {
         return [[paths objectAtIndex:0] stringByAppendingPathComponent: VENDORS_DICTIONARY];
@@ -92,7 +94,7 @@
     return nil;
 }
 
--(NSMutableDictionary*) downloadedVendorsDictionary {
+-(NSMutableDictionary*)downloadedVendorsDictionary {
     NSString *path = [self getDownloadedVendorsDictionaryPath];
     if(![self isEmpty:path]){
         NSMutableDictionary *dict = [[NSDictionary dictionaryWithContentsOfFile: path] mutableCopy];
@@ -105,33 +107,26 @@
 }
 
 - (void)start {
-    
     deb(@"start scan for router: %@", [self getRouterIP]);
 
-    //Initializing the dictionary that holds the Brands name for each MAC Address
-
+    // Initializing the dictionary that holds the Brands name for each MAC Address
     self.brandDictionary = [[NSDictionary dictionaryWithContentsOfFile:[SWIFTPM_MODULE_BUNDLE pathForResource: @"data" ofType: @"plist"]] mutableCopy];
 
-    //Initializing the dictionary that holds the Brands downloaded from the internet
+    // Initializing the dictionary that holds the Brands downloaded from the internet
     NSMutableDictionary *vendors = [self downloadedVendorsDictionary];
     if(![self isEmpty:vendors]){
         [self.brandDictionary addEntriesFromDictionary: vendors];
     }
     
-
     self.localAddress = [self localIPAddress];
     NSArray *a = [self.localAddress componentsSeparatedByString:@"."];
     NSArray *b = [self.netMask componentsSeparatedByString:@"."];
-    if ([self isIpAddressValid:self.localAddress] && (a.count == 4) && (b.count == 4))
-    {
+    if ([self isIpAddressValid:self.localAddress] && (a.count == 4) && (b.count == 4)) {
         for (int i = 0; i < 4; i++) {
             int and = (int)[[a objectAtIndex:i] integerValue] & [[b objectAtIndex:i] integerValue];
-            if (!self.baseAddress.length)
-            {
+            if (!self.baseAddress.length) {
                 self.baseAddress = [NSString stringWithFormat:@"%d", and];
-            }
-            else
-            {
+            } else {
                 self.baseAddress = [NSString stringWithFormat:@"%@.%d", self.baseAddress, and];
                 self.currentHostAddress = and;
                 self.baseAddressEnd = and;
@@ -162,7 +157,7 @@
                 NSString *deviceMac = [self ip2mac: deviceIPAddress];
                 __block NSString *deviceBrand = [self.brandDictionary objectForKey:[self makeKeyFromMAC: deviceMac]];
                 
-                if ([self isEmpty:deviceBrand]) {
+                if ([self isEmpty:deviceBrand] && ![self isEmpty:deviceMac]) {
                     // Создание URL для запроса
                     NSString *urlString = [NSString stringWithFormat:@"https://api.macvendors.com/%@", deviceMac];
                     NSURL *url = [NSURL URLWithString:urlString];
@@ -238,46 +233,51 @@
 }
 
 -(NSString*)ip2mac: (NSString*)strIP {
-    
     const char *ip = [strIP UTF8String];
     
-    int sockfd = 0;
-    unsigned char buf[BUFLEN];
-    unsigned char buf2[BUFLEN];
-    ssize_t n = 0;
+    int mib[6];
+    size_t needed;
+    char *lim, *buf, *next;
     struct rt_msghdr *rtm;
-    struct sockaddr_in *sin;
-    memset(buf, 0, sizeof(buf));
-    memset(buf2, 0, sizeof(buf2));
+    struct sockaddr_inarp *sin;
+    struct sockaddr_dl *sdl;
     
-    sockfd = socket(AF_ROUTE, SOCK_RAW, 0);
-    rtm = (struct rt_msghdr *) buf;
-    rtm->rtm_msglen = sizeof(struct rt_msghdr) + sizeof(struct sockaddr_in);
-    rtm->rtm_version = RTM_VERSION;
-    rtm->rtm_type = RTM_GET;
-    rtm->rtm_addrs = RTA_DST;
-    rtm->rtm_flags = RTF_LLINFO;
-    rtm->rtm_pid = getpid();
-    rtm->rtm_seq = SEQ;
+    mib[0] = CTL_NET;
+    mib[1] = AF_ROUTE;
+    mib[2] = 0;
+    mib[3] = AF_INET;
+    mib[4] = NET_RT_FLAGS;
+    mib[5] = RTF_LLINFO;
     
-    sin = (struct sockaddr_in *) (rtm + 1);
-    sin->sin_len = sizeof(struct sockaddr_in);
-    sin->sin_family = AF_INET;
-    sin->sin_addr.s_addr = inet_addr(ip);
-    write(sockfd, rtm, rtm->rtm_msglen);
-    
-    n = read(sockfd, buf2, BUFLEN);
-    close(sockfd);
-    
-    if (n != 0) {
-        int index =  sizeof(struct rt_msghdr) + sizeof(struct sockaddr_inarp) + 8;
-        NSString *macAddress =[NSString stringWithFormat:@"%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x",buf2[index+0], buf2[index+1], buf2[index+2], buf2[index+3], buf2[index+4], buf2[index+5]];
-        if ([macAddress isEqualToString:@"00:00:00:00:00:00"] ||[macAddress isEqualToString:@"08:00:00:00:00:00"] ) {
-            return nil;
-        }
-        return macAddress;
+    if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0) {
+        perror("sysctl estimate");
+        return @"";
     }
-    return nil;
+    if ((buf = malloc(needed)) == NULL) {
+        perror("malloc");
+        return @"";
+    }
+    if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0) {
+        perror("sysctl get");
+        free(buf);
+        return @"";
+    }
+    
+    lim = buf + needed;
+    for (next = buf; next < lim; next += rtm->rtm_msglen) {
+        rtm = (struct rt_msghdr *)next;
+        sin = (struct sockaddr_inarp *)(rtm + 1);
+        sdl = (struct sockaddr_dl *)(sin + 1);
+        if (sin->sin_addr.s_addr == inet_addr(ip) && sdl->sdl_alen) {
+            u_char *cp = (u_char *)LLADDR(sdl);
+            NSString *macAddress = [NSString stringWithFormat:@"%02x:%02x:%02x:%02x:%02x:%02x", cp[0], cp[1], cp[2], cp[3], cp[4], cp[5]];
+            free(buf);
+            return macAddress;
+        }
+    }
+    
+    free(buf);
+    return @"";
 }
 
 - (NSString *)hostnamesForAddress:(NSString *)address {
@@ -547,25 +547,5 @@
     }
     return @"";
 }
-
-//-(NSString*) getCurrentWifiSSID {
-//#if TARGET_IPHONE_SIMULATOR
-//    return @"Sim_err_SSID_NotSupported";
-//#else
-//    NSString *data = nil;
-//    CFDictionaryRef dict = CNCopyCurrentNetworkInfo((CFStringRef) DEFAULT_WIFI_INTERFACE);
-//    if (dict) {
-//        deb(@"AP Wifi: %@", dict);
-//        data = [NSString stringWithString:(NSString *)CFDictionaryGetValue(dict, @"SSID")];
-//        CFRelease(dict);
-//    }
-//
-//    if (data == nil) {
-//        data = @"none";
-//    }
-//
-//    return data;
-//#endif
-//}
 
 @end
