@@ -12,13 +12,14 @@
 #include "if_arp.h"
 #include "if_ether.h"
 #include "route.h"
+#include "if_dl.h"
 
 #include "PingOperation.h"
 #import <SystemConfiguration/CaptiveNetwork.h>
 
 #define VENDORS_DICTIONARY @"vendors.out"
-#define TIMEOUT 0.5
-#define MAX_IP_RANGE 254
+#define TIMEOUT 0.1
+#define MAX_IP_RANGE 30
 
 #ifndef DEFAULT_WIFI_INTERFACE
 #define DEFAULT_WIFI_INTERFACE @"en0"
