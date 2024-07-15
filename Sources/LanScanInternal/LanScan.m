@@ -17,7 +17,7 @@
 #import <SystemConfiguration/CaptiveNetwork.h>
 
 #define VENDORS_DICTIONARY @"vendors.out"
-#define TIMEOUT 5.0
+#define TIMEOUT 0.5
 #define MAX_IP_RANGE 254
 
 #ifndef DEFAULT_WIFI_INTERFACE
